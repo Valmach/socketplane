@@ -33,8 +33,8 @@ COMMANDS:
     deps
             Show SocketPlane dependencies
 
-    agent {stop|start|logs}
-            Start/Stop the SocketPlane container or show its logs
+    agent {stop|start|restart|logs}
+            Start/Stop/Restart the SocketPlane container or show its logs
 
     info [container_id]
             Show SocketPlane info for all containers, or for a given container_id
@@ -191,6 +191,11 @@ install_ovs() {
     if command_exists ovsdb-server && command_exists ovs-vswitchd ; then
         log_step "Open vSwitch already installed!"
     else
+        if ! command getenforce  2>/dev/null || [[ $(getenforce) =~ Enforcing|Permissive ]] ; then
+        log_step "Checking Open vSwitch dependencies.."
+        $pkg install policycoreutils-python
+        sudo semodule -d openvswitch  2>/dev/null || true
+        fi
         log_step "Installing Open vSwitch.."
         $pkg install $ovs | indent
     fi
@@ -375,15 +380,19 @@ logs() {
         log_fatal "SocketPlane container is not running"
         exit 1
     fi
-    docker logs $(cat /var/run/socketplane/cid)
+    docker logs $@ $(cat /var/run/socketplane/cid)
 }
 
 info() {
-    containerId=$1
-    if [ -z "$containerId" ]; then
+    if [ -z "$1" ]; then
         curl -s -X GET http://localhost:6675/v0.1/connections | python -m json.tool
     else
-        curl -s -X GET http://localhost:6675/v0.1/connections/$containerId | python -m json.tool
+        containerId=$(docker ps -a --no-trunc=true | grep $1 | awk {' print $1'})
+        if [ -z "$containerId" ]; then
+            log_fatal "Could not find a Container with Id : $1"
+        else
+            curl -s -X GET http://localhost:6675/v0.1/connections/$containerId | python -m json.tool
+        fi
     fi
 }
 
@@ -395,7 +404,7 @@ container_run() {
     fi
 
     attach="false"
-    if [ -z "$(echo "$@" | grep -e '-.*\?d.*\?')" ]; then
+    if [ -z "$(echo "$@" | grep -e '-[a-zA-Z]*d[a-zA-Z]*\s')" ]; then
         attach="true"
     fi
 
@@ -432,7 +441,7 @@ container_start() {
     cName=$(docker inspect --format='{{ .Name }}' $cid)
 
     json=$(curl -s -X GET http://localhost:6675/v0.1/connections/$cid)
-    result=$(echo $json | sed 's/[,{}]/\n/g' | sed 's/^".*":"\(.*\)"/\1/g' | awk -v RS="" '{ print $6, $7, $8, $9, $10 }')
+    result=$(echo $json | sed 's/[,{}]/\n/g' | sed 's/^".*":"\(.*\)"/\1/g' | awk -v RS="" '{ print $7, $8, $9, $10, $11 }')
 
     attach $result $cPid
 
@@ -624,11 +633,16 @@ case "$1" in
             stop)
                 stop_socketplane_image
                 ;;
+            restart)
+                stop_socketplane_image
+                start_socketplane_image
+                ;;
             logs)
-                logs
+                shift 1
+                logs $@
                 ;;
             *)
-                log_fatal "\"socketplane agent\" {stop|start|logs}"
+                log_fatal "\"socketplane agent\" {stop|start|restart|logs}"
                 exit 1
                 ;;
         esac
